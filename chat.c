@@ -10,10 +10,13 @@
 #include <signal.h>
 #include <openssl/evp.h>
 #include <ncurses.h>
+#include <locale.h>
+#include <langinfo.h>
+#include <wchar.h>
 
 #define MAX_CLIENTS 10
-#define BUFFER_SIZE 2048
-#define USERNAME_SIZE 32
+#define BUFFER_SIZE 4096
+#define USERNAME_SIZE 64
 #define PASSKEY_SIZE 64
 #define MAX_MESSAGES 100
 #define INPUT_HEIGHT 3
@@ -41,6 +44,8 @@ typedef struct {
     int start;
 } message_history_t;
 
+
+
 // Global variables
 volatile sig_atomic_t running = 1;
 int server_socket = -1;
@@ -62,17 +67,46 @@ void format_message(const char* username, const char* message, char* output, siz
 void broadcast_message(client_t* clients, int* client_count, pthread_mutex_t* clients_mutex,
                       int sender_socket, const char* message, const char* username);
 
+void init_locale_support() {
+    if (setlocale(LC_ALL, "") == NULL) {
+        fprintf(stderr, "Failed to set locale\n");
+        exit(1);
+    }
+    
+    // Verify UTF-8 support
+    char* charset = nl_langinfo(CODESET);
+    if (strcmp(charset, "UTF-8") != 0) {
+        fprintf(stderr, "Warning: Current locale charset is %s, not UTF-8\n", charset);
+    }
+}
+
+void play_notification() {
+    if (use_tui) {
+        beep();  // ncurses beep
+        flash(); // visual flash for accessibility
+    } else {
+        printf("\a"); // ASCII bell
+        fflush(stdout);
+    }
+}
+
+
 // Initialize TUI windows
 void init_windows() {
+    init_locale_support();
+    
     initscr();
     start_color();
     cbreak();
     noecho();
     keypad(stdscr, TRUE);
     
-    init_pair(1, COLOR_GREEN, COLOR_BLACK);
-    init_pair(2, COLOR_CYAN, COLOR_BLACK);
-    init_pair(3, COLOR_WHITE, COLOR_BLACK);
+    if (has_colors()) {
+        start_color();
+        init_pair(1, COLOR_GREEN, COLOR_BLACK);
+        init_pair(2, COLOR_CYAN, COLOR_BLACK);
+        init_pair(3, COLOR_WHITE, COLOR_BLACK);
+    }
     
     int max_y, max_x;
     getmaxyx(stdscr, max_y, max_x);
@@ -96,6 +130,7 @@ void cleanup_windows() {
     }
 }
 
+// Modified add_message for better UTF-8 handling
 void add_message(const char* message) {
     if (!use_tui) {
         printf("%s\n", message);
@@ -106,20 +141,27 @@ void add_message(const char* message) {
     pthread_mutex_lock(&history_mutex);
     
     if (history.count < MAX_MESSAGES) {
-        strcpy(history.messages[history.count], message);
+        strncpy(history.messages[history.count], message, BUFFER_SIZE - 1);
+        history.messages[history.count][BUFFER_SIZE - 1] = '\0';
         history.count++;
     } else {
-        strcpy(history.messages[history.start], message);
+        strncpy(history.messages[history.start], message, BUFFER_SIZE - 1);
+        history.messages[history.start][BUFFER_SIZE - 1] = '\0';
         history.start = (history.start + 1) % MAX_MESSAGES;
     }
     
     werase(message_win);
+    
+    // UTF-8 aware message display
     for (int i = 0; i < history.count; i++) {
         int idx = (history.start + i) % MAX_MESSAGES;
+        char *msg_copy = strdup(history.messages[idx]);
         
-        char *timestamp = strtok(strdup(history.messages[idx]), "]");
-        char *username = strtok(NULL, ":");
-        char *content = strtok(NULL, "");
+        // Split message while preserving UTF-8 characters
+        char *saveptr;
+        char *timestamp = strtok_r(msg_copy, "]", &saveptr);
+        char *username = strtok_r(NULL, ":", &saveptr);
+        char *content = strtok_r(NULL, "", &saveptr);
         
         if (timestamp && username && content) {
             wprintw(message_win, "[%s]", timestamp + 1);
@@ -130,11 +172,14 @@ void add_message(const char* message) {
         } else {
             wprintw(message_win, "%s\n", history.messages[idx]);
         }
+        
+        free(msg_copy);
     }
     
     wrefresh(message_win);
     pthread_mutex_unlock(&history_mutex);
 }
+
 
 // SHA-256 implementation
 void calculate_sha256(const char* input, char* output) {
@@ -162,8 +207,10 @@ void* handle_client_messages(void* arg) {
     while (running) {
         int received = recv(args->socket, buffer, BUFFER_SIZE - 1, 0);
         if (received <= 0) break;
+        
         buffer[received] = '\0';
         add_message(buffer);
+        play_notification(); // Play sound for new message
     }
     
     free(args);
@@ -172,6 +219,7 @@ void* handle_client_messages(void* arg) {
 
 // Modified start_client function
 int start_client(const char* host, int port, const char* username, const char* passkey, int use_ui) {
+    init_locale_support();
     struct sockaddr_in server_addr;
     char buffer[BUFFER_SIZE];
     char input_buffer[BUFFER_SIZE];
@@ -262,8 +310,9 @@ int start_client(const char* host, int port, const char* username, const char* p
             wrefresh(input_win);
             
             // Get input
-            echo();
+             echo();
             wmove(input_win, 1, 1);
+            memset(input_buffer, 0, BUFFER_SIZE);
             wgetnstr(input_win, input_buffer, BUFFER_SIZE - 1);
             noecho();
         } else {
@@ -279,11 +328,10 @@ int start_client(const char* host, int port, const char* username, const char* p
         
         if (strlen(input_buffer) > 0) {
             // Send message to server
-            if (send(sock, input_buffer, strlen(input_buffer), 0) < 0) {
+             if (send(sock, input_buffer, strlen(input_buffer), 0) < 0) {
                 add_message("Error: Failed to send message");
                 break;
             }
-            
             // Display own message locally
             format_message(username, input_buffer, formatted_buffer, BUFFER_SIZE);
             add_message(formatted_buffer);
@@ -503,6 +551,20 @@ int start_server(const char* host, int port, const char* passkey) {
 }
 
 int main(int argc, char* argv[]) {
+// Set UTF-8 locale before anything else
+    if (setlocale(LC_ALL, "") == NULL) {
+        fprintf(stderr, "Failed to set locale. Check your locale settings.\n");
+        return 1;
+    }
+    
+    // Verify UTF-8 support
+    char* charset = nl_langinfo(CODESET);
+    if (strcmp(charset, "UTF-8") != 0) {
+        fprintf(stderr, "Warning: Current locale charset is %s, not UTF-8\n", charset);
+        fprintf(stderr, "Please set your LANG environment variable to a UTF-8 locale\n");
+        fprintf(stderr, "For example: export LANG=en_US.UTF-8\n");
+        return 1;
+    }
     if (argc < 5) {
         printf("Usage:\n");
         printf("Server mode: %s -s <host> <port> <passkey>\n", argv[0]);
