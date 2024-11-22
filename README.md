@@ -1,5 +1,8 @@
 # Terminal Chat Application
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+
 A terminal-based chat application with TUI (Text User Interface) support, UTF-8 character support, and message notifications.
 
 ## Features
@@ -250,3 +253,20 @@ While in chat:
 - Maximum 10 simultaneous clients (can be changed in code)
 - Messages are not encrypted in transit (only passkey is hashed)
 - No message persistence (history is lost when client disconnects)
+
+License
+This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License Summary
+
+✅ Commercial use
+✅ Modification
+✅ Distribution
+✅ Private use
+✅ Sublicense
+❗ No liability
+❗ No warranty
+
+The MIT License is a permissive license that is short and to the point. It lets people do almost anything they want with your project, like making and distributing closed source versions, as long as they:
+
+Include the original copyright notice
+Include the license text
